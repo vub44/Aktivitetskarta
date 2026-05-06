@@ -33,6 +33,15 @@
         <input type="file" id="fileInput" accept=".gpx" />
     </div>
     <div class="control-group">
+        <label>Kartstil</label>
+        <select id="lineStyle" style="width: 100%; padding: 8px; background: #333; color: white; border: 1px solid #555; border-radius: 4px;">
+            <option value="solid">Standard (Orange)</option>
+            <option value="speed">Fartkarta (Blå=Långsam, Röd=Snabb)</option>
+            <option value="elevation">Höjdkarta (Grön=Låg, Röd=Hög)</option>
+        </select>
+    </div>
+    
+    <div class="control-group">
         <label>Visa på bilden:</label>
         <label style="display:flex; gap:10px;"><input type="checkbox" id="showDist" checked> Distans</label>
         <label style="display:flex; gap:10px;"><input type="checkbox" id="showTime" checked> Tid</label>
@@ -70,7 +79,10 @@
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 
     let rawPoints = [];
+    let pathSegments = []; // NY: Sparar data för varje litet segment av rutten
+    let statsMinMax = { minEle: 0, maxEle: 0, minSpeed: 0, maxSpeed: 0 };
     let processedStats = {};
+    
     const previewCanvas = document.getElementById('previewCanvas');
     const ctx = previewCanvas.getContext('2d');
 
@@ -78,25 +90,19 @@
     const fileInput = document.getElementById('fileInput');
     const threshSlider = document.getElementById('threshold');
     const padSlider = document.getElementById('padding');
+    const styleSelect = document.getElementById('lineStyle'); // NY: Rullgardinsmenyn
     const downloadBtn = document.getElementById('downloadBtn');
     
-    // Checkbox-element för att lyssna på ändringar
     const checkboxes = ['showDist', 'showTime', 'showPace', 'showHR', 'showEle'];
 
     // Lyssna på ändringar
     fileInput.addEventListener('change', handleFile);
-    threshSlider.addEventListener('input', () => {
-        document.getElementById('threshVal').innerText = threshSlider.value;
-        updateAll();
-    });
-    padSlider.addEventListener('input', () => {
-        document.getElementById('padVal').innerText = padSlider.value;
-        updateAll();
-    });
+    threshSlider.addEventListener('input', () => { document.getElementById('threshVal').innerText = threshSlider.value; updateAll(); });
+    padSlider.addEventListener('input', () => { document.getElementById('padVal').innerText = padSlider.value; updateAll(); });
+    styleSelect.addEventListener('change', updateAll); // Rita om när man byter stil
     
-    // Lägg till lyssnare på alla checkboxar
     checkboxes.forEach(id => {
-        document.getElementById(id).addEventListener('change', updateAll);
+        document.getElementById(id).addEventListener('change', drawPreview); // Behöver bara rita om bilden för texten
     });
 
     async function handleFile(e) {
@@ -110,35 +116,22 @@
 
     function parseGPX(xmlText) {
         const parser = new DOMParser();
-        // Vi parsar som text/xml för att vara strikta
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
         const trkpts = xmlDoc.getElementsByTagName("trkpt");
         rawPoints = [];
     
         for (let pt of trkpts) {
-            // 1. Försök hitta puls (hr) på flera sätt
-            // Vi letar både efter taggar med "hr" och kollar i extensions
-            let hr = null;
-            
-            // Metod A: Kolla gpxtpx:hr (Standard Garmin)
-            const hrTags = pt.getElementsByTagName("hr");
-            if (hrTags.length > 0) {
-                hr = hrTags[0].textContent;
-            } else {
-                // Metod B: Om webbläsaren inte gillar namespaces, leta efter alla barn-noder
-                // och se om någon slutar på ":hr"
-                const extensions = pt.getElementsByTagName("extensions")[0];
-                if (extensions) {
-                    const allNodes = extensions.getElementsByTagName("*");
-                    for (let node of allNodes) {
-                        if (node.nodeName.includes("hr")) {
-                            hr = node.textContent;
-                            break;
-                        }
-                    }
+            let hr = null, cad = null;
+            const extensions = pt.getElementsByTagName("extensions")[0];
+            if (extensions) {
+                const nodes = extensions.getElementsByTagName("*");
+                for (let node of nodes) {
+                    if (node.nodeName.includes("hr")) hr = node.textContent;
+                    if (node.nodeName.includes("cad")) cad = node.textContent;
                 }
             }
-    
+            if (!hr) hr = pt.getElementsByTagName("hr")[0]?.textContent;
+            
             rawPoints.push({
                 lat: parseFloat(pt.getAttribute("lat")),
                 lon: parseFloat(pt.getAttribute("lon")),
@@ -149,14 +142,6 @@
         }
     }
 
-    function updateAll() {
-        if (rawPoints.length < 2) return;
-        calculateMovingStats();
-        drawPreview();
-        updateMap();
-    }
-
-    // Hjälpfunktion för att formatera tempo (måste finnas för att koden ska köra!)
     function formatPace(timeSeconds, distMeters) {
         if (distMeters <= 0) return "--:-- /km";
         const distKm = distMeters / 1000;
@@ -166,26 +151,54 @@
         return `${mins}:${secs.toString().padStart(2, '0')} /km`;
     }
 
+    function updateAll() {
+        if (rawPoints.length < 2) return;
+        calculateMovingStats();
+        drawPreview();
+        updateMap();
+    }
+
     function calculateMovingStats() {
         let dist = 0, time = 0, eleGain = 0, hrSum = 0, hrCount = 0;
         const threshold = parseFloat(threshSlider.value);
+        
+        pathSegments = [];
+        let speeds = [];
+        let elevations = [];
     
         for (let i = 0; i < rawPoints.length - 1; i++) {
             const p1 = rawPoints[i], p2 = rawPoints[i+1];
             
             if (p2.ele > p1.ele) eleGain += (p2.ele - p1.ele);
-            
-            if (p1.hr) {
-                hrSum += p1.hr;
-                hrCount++;
-            }
+            if (p1.hr) { hrSum += p1.hr; hrCount++; }
+            if (p1.ele !== undefined) elevations.push(p1.ele);
     
             const d = map.distance([p1.lat, p1.lon], [p2.lat, p2.lon]);
             const t = (p2.time - p1.time) / 1000;
+            let speed = 0;
+
             if (t > 0 && (d/t) > threshold) {
                 dist += d;
                 time += t;
+                speed = d/t; // Meter per sekund
+                speeds.push(speed);
             }
+            
+            // Spara data för just denna lilla linje
+            pathSegments.push({ p1, p2, speed, ele: p1.ele || 0 });
+        }
+        
+        // --- Beräkna smart min/max för färgskalan ---
+        // Vi sorterar arrayerna och tar bort de extrema ytterligheterna (GPS-buggar)
+        if (speeds.length > 0) {
+            speeds.sort((a, b) => a - b);
+            statsMinMax.minSpeed = speeds[Math.floor(speeds.length * 0.05)]; // Ignorera 5% långsammaste
+            statsMinMax.maxSpeed = speeds[Math.floor(speeds.length * 0.95)]; // Ignorera 5% snabbaste (rusningar/buggar)
+        }
+        if (elevations.length > 0) {
+            elevations.sort((a, b) => a - b);
+            statsMinMax.minEle = elevations[Math.floor(elevations.length * 0.02)];
+            statsMinMax.maxEle = elevations[Math.floor(elevations.length * 0.98)];
         }
     
         processedStats = {
@@ -195,12 +208,38 @@
             hrStr: hrCount > 0 ? Math.round(hrSum / hrCount) + " bpm" : "--",
             eleStr: Math.round(eleGain) + " m"
         };
+        document.getElementById('statsBox').innerText = `Beräknat: ${processedStats.distStr} | ${processedStats.timeStr}`;
+    }
 
-        document.getElementById('statsBox').innerText = 
-            `Beräknat: ${processedStats.distStr} | ${processedStats.timeStr} | ${processedStats.paceStr}`;
+    // NY FUNKTION: Hämtar rätt färg för varje segment beroende på menyn
+    function getSegmentColor(segment) {
+        const style = styleSelect.value;
+        if (style === 'solid') return '#fc4c02'; // Klassisk Orange
+
+        if (style === 'speed') {
+            if (statsMinMax.maxSpeed === statsMinMax.minSpeed) return 'hsl(120, 100%, 50%)';
+            let norm = (segment.speed - statsMinMax.minSpeed) / (statsMinMax.maxSpeed - statsMinMax.minSpeed);
+            norm = Math.max(0, Math.min(1, norm)); // Håll värdet mellan 0 och 1
+            
+            // HSL: 240 (Blå) -> 120 (Grön) -> 0 (Röd)
+            const hue = (1 - norm) * 240; 
+            return `hsl(${hue}, 100%, 50%)`;
+        }
+
+        if (style === 'elevation') {
+            if (statsMinMax.maxEle === statsMinMax.minEle) return 'hsl(120, 100%, 50%)';
+            let norm = (segment.ele - statsMinMax.minEle) / (statsMinMax.maxEle - statsMinMax.minEle);
+            norm = Math.max(0, Math.min(1, norm));
+            
+            // HSL: 120 (Grön=Låg) -> 60 (Gul) -> 0 (Röd=Hög)
+            const hue = (1 - norm) * 120;
+            return `hsl(${hue}, 100%, 50%)`;
+        }
     }
 
     function drawPreview() {
+        if (pathSegments.length === 0) return;
+        
         const size = 1080;
         previewCanvas.width = size;
         previewCanvas.height = size;
@@ -215,17 +254,20 @@
         const mapX = lon => size * pad + (lon - minLon) / (maxLon - minLon) * size * (1 - 2 * pad);
         const mapY = lat => size * (1 - pad) - (lat - minLat) / (maxLat - minLat) * size * (1 - 2 * pad);
 
-        // Rita rutt
-        ctx.strokeStyle = "white";
-        ctx.lineWidth = 12;
+        // --- RITA RUTTEN MED OLIKA FÄRGER ---
+        ctx.lineWidth = styleSelect.value === 'solid' ? 12 : 8; // Lite tunnare linje om det är en gradient för att se färgerna bättre
         ctx.lineJoin = "round";
         ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(mapX(rawPoints[0].lon), mapY(rawPoints[0].lat));
-        rawPoints.forEach(p => ctx.lineTo(mapX(p.lon), mapY(p.lat)));
-        ctx.stroke();
+        
+        for (let seg of pathSegments) {
+            ctx.strokeStyle = getSegmentColor(seg);
+            ctx.beginPath();
+            ctx.moveTo(mapX(seg.p1.lon), mapY(seg.p1.lat));
+            ctx.lineTo(mapX(seg.p2.lon), mapY(seg.p2.lat));
+            ctx.stroke();
+        }
 
-        // Samla ihop valda stats
+        // Rita texten (Samma som förut)
         const activeStats = [];
         if (document.getElementById('showDist').checked) activeStats.push({val: processedStats.distStr, label: "DISTANS"});
         if (document.getElementById('showTime').checked) activeStats.push({val: processedStats.timeStr, label: "TID"});
@@ -233,19 +275,14 @@
         if (document.getElementById('showHR').checked) activeStats.push({val: processedStats.hrStr, label: "SNITTPULS"});
         if (document.getElementById('showEle').checked) activeStats.push({val: processedStats.eleStr, label: "STIGNING"});
     
-        // Rita ut de valda värdena jämnt fördelade längst ner
         if (activeStats.length > 0) {
             const spacing = size / (activeStats.length + 1);
             activeStats.forEach((stat, i) => {
                 const x = spacing * (i + 1);
                 ctx.textAlign = "center";
-                
-                // Värdet (t.ex. 10.5 km)
                 ctx.fillStyle = "white";
                 ctx.font = "bold 45px Arial";
                 ctx.fillText(stat.val, x, size - 120);
-                
-                // Etiketten (t.ex. DISTANS)
                 ctx.font = "25px Arial";
                 ctx.fillStyle = "#aaa";
                 ctx.fillText(stat.label, x, size - 80);
@@ -254,15 +291,28 @@
     }
 
     function updateMap() {
-        // Ta bort gamla rutter från kartan innan vi ritar ny
+        // Rensa kartan från gamla linjer
         map.eachLayer(layer => {
             if (layer instanceof L.Polyline && !(layer instanceof L.TileLayer)) {
                 map.removeLayer(layer);
             }
         });
 
-        const poly = L.polyline(rawPoints.map(p => [p.lat, p.lon]), {color: '#fc4c02', weight: 4}).addTo(map);
-        map.fitBounds(poly.getBounds(), {padding: [20, 20]});
+        // Eftersom en linje nu kan ha hundratals färger, måste vi skapa en polyline för varje segment
+        const mapLines = [];
+        for (let seg of pathSegments) {
+            const color = getSegmentColor(seg);
+            mapLines.push( L.polyline([[seg.p1.lat, seg.p1.lon], [seg.p2.lat, seg.p2.lon]], {
+                color: color,
+                weight: styleSelect.value === 'solid' ? 4 : 5 // Lite tjockare om det är färgkodat
+            }) );
+        }
+        
+        // Lägg till alla linjer i en grupp på kartan
+        if (mapLines.length > 0) {
+            const group = L.featureGroup(mapLines).addTo(map);
+            map.fitBounds(group.getBounds(), {padding: [20, 20]});
+        }
     }
 
     downloadBtn.addEventListener('click', () => {
