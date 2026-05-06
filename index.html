@@ -136,7 +136,7 @@
         
         // Gränsvärde för rörelse: 0.5 meter per sekund (~1.8 km/h)
         // Detta filtrerar bort "brus" när du står still.
-        const movingThresholdMs = 0.5; 
+        const movingThresholdMs = 0.3; 
     
         for (let i = 0; i < points.length - 1; i++) {
             const p1 = points[i];
