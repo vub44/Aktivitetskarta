@@ -110,24 +110,41 @@
 
     function parseGPX(xmlText) {
         const parser = new DOMParser();
+        // Vi parsar som text/xml för att vara strikta
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
         const trkpts = xmlDoc.getElementsByTagName("trkpt");
         rawPoints = [];
     
         for (let pt of trkpts) {
-            const hr = pt.getElementsByTagName("gpxtpx:hr")[0]?.textContent || 
-                       pt.getElementsByTagName("hr")[0]?.textContent;
+            // 1. Försök hitta puls (hr) på flera sätt
+            // Vi letar både efter taggar med "hr" och kollar i extensions
+            let hr = null;
             
-            const cad = pt.getElementsByTagName("gpxtpx:cad")[0]?.textContent || 
-                        pt.getElementsByTagName("cad")[0]?.textContent;
+            // Metod A: Kolla gpxtpx:hr (Standard Garmin)
+            const hrTags = pt.getElementsByTagName("hr");
+            if (hrTags.length > 0) {
+                hr = hrTags[0].textContent;
+            } else {
+                // Metod B: Om webbläsaren inte gillar namespaces, leta efter alla barn-noder
+                // och se om någon slutar på ":hr"
+                const extensions = pt.getElementsByTagName("extensions")[0];
+                if (extensions) {
+                    const allNodes = extensions.getElementsByTagName("*");
+                    for (let node of allNodes) {
+                        if (node.nodeName.includes("hr")) {
+                            hr = node.textContent;
+                            break;
+                        }
+                    }
+                }
+            }
     
             rawPoints.push({
                 lat: parseFloat(pt.getAttribute("lat")),
                 lon: parseFloat(pt.getAttribute("lon")),
                 ele: parseFloat(pt.getElementsByTagName("ele")[0]?.textContent || 0),
                 time: new Date(pt.getElementsByTagName("time")[0]?.textContent),
-                hr: hr ? parseInt(hr) : null,
-                cad: cad ? parseInt(cad) : null
+                hr: hr ? parseInt(hr) : null
             });
         }
     }
