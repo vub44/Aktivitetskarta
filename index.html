@@ -79,6 +79,9 @@
     const threshSlider = document.getElementById('threshold');
     const padSlider = document.getElementById('padding');
     const downloadBtn = document.getElementById('downloadBtn');
+    
+    // Checkbox-element för att lyssna på ändringar
+    const checkboxes = ['showDist', 'showTime', 'showPace', 'showHR', 'showEle'];
 
     // Lyssna på ändringar
     fileInput.addEventListener('change', handleFile);
@@ -89,6 +92,11 @@
     padSlider.addEventListener('input', () => {
         document.getElementById('padVal').innerText = padSlider.value;
         updateAll();
+    });
+    
+    // Lägg till lyssnare på alla checkboxar
+    checkboxes.forEach(id => {
+        document.getElementById(id).addEventListener('change', updateAll);
     });
 
     async function handleFile(e) {
@@ -107,11 +115,9 @@
         rawPoints = [];
     
         for (let pt of trkpts) {
-            // Hämta puls om det finns (Garmin använder ofta gpxtpx:hr)
             const hr = pt.getElementsByTagName("gpxtpx:hr")[0]?.textContent || 
                        pt.getElementsByTagName("hr")[0]?.textContent;
             
-            // Hämta kadens
             const cad = pt.getElementsByTagName("gpxtpx:cad")[0]?.textContent || 
                         pt.getElementsByTagName("cad")[0]?.textContent;
     
@@ -133,6 +139,16 @@
         updateMap();
     }
 
+    // Hjälpfunktion för att formatera tempo (måste finnas för att koden ska köra!)
+    function formatPace(timeSeconds, distMeters) {
+        if (distMeters <= 0) return "--:-- /km";
+        const distKm = distMeters / 1000;
+        const paceMinKm = (timeSeconds / 60) / distKm;
+        const mins = Math.floor(paceMinKm);
+        const secs = Math.round((paceMinKm - mins) * 60);
+        return `${mins}:${secs.toString().padStart(2, '0')} /km`;
+    }
+
     function calculateMovingStats() {
         let dist = 0, time = 0, eleGain = 0, hrSum = 0, hrCount = 0;
         const threshold = parseFloat(threshSlider.value);
@@ -140,10 +156,8 @@
         for (let i = 0; i < rawPoints.length - 1; i++) {
             const p1 = rawPoints[i], p2 = rawPoints[i+1];
             
-            // Höjdvinst
             if (p2.ele > p1.ele) eleGain += (p2.ele - p1.ele);
             
-            // Puls (vi räknar snitt på hela passet, oavsett rörelse, eller bara vid rörelse?)
             if (p1.hr) {
                 hrSum += p1.hr;
                 hrCount++;
@@ -160,10 +174,13 @@
         processedStats = {
             distStr: (dist / 1000).toFixed(2) + " km",
             timeStr: new Date(time * 1000).toISOString().substr(11, 8),
-            paceStr: formatPace(time, dist), // hjälpfunktion
+            paceStr: formatPace(time, dist),
             hrStr: hrCount > 0 ? Math.round(hrSum / hrCount) + " bpm" : "--",
             eleStr: Math.round(eleGain) + " m"
         };
+
+        document.getElementById('statsBox').innerText = 
+            `Beräknat: ${processedStats.distStr} | ${processedStats.timeStr} | ${processedStats.paceStr}`;
     }
 
     function drawPreview() {
@@ -174,7 +191,6 @@
 
         const pad = parseFloat(padSlider.value) / 100;
         
-        // Hitta bounds
         let lats = rawPoints.map(p => p.lat), lons = rawPoints.map(p => p.lon);
         let minLat = Math.min(...lats), maxLat = Math.max(...lats);
         let minLon = Math.min(...lons), maxLon = Math.max(...lons);
@@ -184,7 +200,7 @@
 
         // Rita rutt
         ctx.strokeStyle = "white";
-        ctx.lineWidth = 10;
+        ctx.lineWidth = 12;
         ctx.lineJoin = "round";
         ctx.lineCap = "round";
         ctx.beginPath();
@@ -192,19 +208,7 @@
         rawPoints.forEach(p => ctx.lineTo(mapX(p.lon), mapY(p.lat)));
         ctx.stroke();
 
-        // Rita text
-        ctx.fillStyle = "white";
-        ctx.font = "bold 45px Arial";
-        ctx.fillText(processedStats.distStr, 60, size - 120);
-        ctx.fillText(processedStats.timeStr, size/2 - 100, size - 120);
-        ctx.fillText(processedStats.paceStr, size - 280, size - 120);
-        
-        ctx.font = "25px Arial";
-        ctx.fillStyle = "#aaa";
-        ctx.fillText("DISTANS", 60, size - 80);
-        ctx.fillText("TID I RÖRELSE", size/2 - 100, size - 80);
-        ctx.fillText("TEMPO", size - 280, size - 80);
-
+        // Samla ihop valda stats
         const activeStats = [];
         if (document.getElementById('showDist').checked) activeStats.push({val: processedStats.distStr, label: "DISTANS"});
         if (document.getElementById('showTime').checked) activeStats.push({val: processedStats.timeStr, label: "TID"});
@@ -213,28 +217,41 @@
         if (document.getElementById('showEle').checked) activeStats.push({val: processedStats.eleStr, label: "STIGNING"});
     
         // Rita ut de valda värdena jämnt fördelade längst ner
-        const spacing = size / (activeStats.length + 1);
-        activeStats.forEach((stat, i) => {
-            const x = spacing * (i + 1);
-            ctx.textAlign = "center";
-            ctx.fillStyle = "white";
-            ctx.font = "bold 40px Arial";
-            ctx.fillText(stat.val, x, size - 120);
-            ctx.font = "20px Arial";
-            ctx.fillStyle = "#aaa";
-            ctx.fillText(stat.label, x, size - 80);
-        });
+        if (activeStats.length > 0) {
+            const spacing = size / (activeStats.length + 1);
+            activeStats.forEach((stat, i) => {
+                const x = spacing * (i + 1);
+                ctx.textAlign = "center";
+                
+                // Värdet (t.ex. 10.5 km)
+                ctx.fillStyle = "white";
+                ctx.font = "bold 45px Arial";
+                ctx.fillText(stat.val, x, size - 120);
+                
+                // Etiketten (t.ex. DISTANS)
+                ctx.font = "25px Arial";
+                ctx.fillStyle = "#aaa";
+                ctx.fillText(stat.label, x, size - 80);
+            });
+        }
     }
 
     function updateMap() {
-        const poly = L.polyline(rawPoints.map(p => [p.lat, p.lon]), {color: '#fc4c02'}).addTo(map);
-        map.fitBounds(poly.getBounds());
+        // Ta bort gamla rutter från kartan innan vi ritar ny
+        map.eachLayer(layer => {
+            if (layer instanceof L.Polyline && !(layer instanceof L.TileLayer)) {
+                map.removeLayer(layer);
+            }
+        });
+
+        const poly = L.polyline(rawPoints.map(p => [p.lat, p.lon]), {color: '#fc4c02', weight: 4}).addTo(map);
+        map.fitBounds(poly.getBounds(), {padding: [20, 20]});
     }
 
     downloadBtn.addEventListener('click', () => {
         const link = document.createElement('a');
-        link.download = 'my-workout.png';
-        link.href = previewCanvas.toDataURL();
+        link.download = `garmin-overlay-${new Date().getTime()}.png`;
+        link.href = previewCanvas.toDataURL("image/png");
         link.click();
     });
 </script>
