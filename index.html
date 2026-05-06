@@ -3,110 +3,291 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Garmin Heatmap</title>
+    <title>Min Garmin Heatmap & Bildgenerator</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     
     <style>
-        body { margin: 0; padding: 0; font-family: sans-serif; }
-        #map { height: 100vh; width: 100vw; }
+        body { margin: 0; padding: 0; font-family: 'Helvetica Neue', sans-serif; background-color: #1a1a1a; color: white; }
+        #map { height: 100vh; width: 100vw; position: absolute; z-index: 1; }
         #controls {
-            position: absolute; top: 10px; left: 50px; z-index: 1000;
-            background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            position: absolute; top: 10px; left: 10px; z-index: 1000;
+            background: rgba(30, 30, 30, 0.9); padding: 15px; border-radius: 12px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5); backdrop-filter: blur(5px);
+            max-width: 300px;
         }
-        .info { font-size: 12px; color: #666; margin-top: 5px; }
+        h3 { margin-top: 0; color: #fc4c02; } /* Strava-orange */
+        input[type="file"] { margin-bottom: 10px; width: 100%; }
+        button {
+            background-color: #fc4c02; color: white; border: none; padding: 10px 15px;
+            border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%;
+            margin-top: 10px; transition: background 0.2s;
+        }
+        button:hover { background-color: #e34402; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        .info { font-size: 12px; color: #aaa; margin-top: 5px; margin-bottom: 10px; }
+        #status { font-size: 14px; margin-top: 10px; color: #2ecc71; }
+
+        /* Styling för overlay-bilden (dold tills den behövs) */
+        #downloadLink { display: none; margin-top: 10px; text-align: center; color: #3498db; text-decoration: none; font-weight: bold;}
     </style>
 </head>
 <body>
 
 <div id="controls">
-    <h3>Tränings Heatmap</h3>
+    <h3>Träningsvisualiserare</h3>
+    <p class="info">Ladda upp <strong>en</strong> .gpx-fil för att generera en delningsbild, eller flera för heatmap.</p>
     <input type="file" id="fileInput" multiple accept=".gpx" />
-    <p class="info">Ladda upp en eller flera .gpx-filer</p>
+    
+    <button id="generateImgBtn" disabled>Generera Delningsbild (Transparent)</button>
+    <a id="downloadLink" target="_blank">Klicka här för att ladda ner bild</a>
+    
     <div id="status"></div>
 </div>
 
 <div id="map"></div>
 
-<!-- Leaflet JS och Heatmap Plugin -->
+<!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://leaflet.github.io/Leaflet.heat/dist/leaflet-heat.js"></script>
 
 <script>
-    // Initialisera kartan
-    const map = L.map('map').setView([59.3293, 18.0686], 6); // Startar över Sverige
-
-    // Lägg till bakgrundskarta (mörk design ser ofta bäst ut för heatmaps)
+    // --- 1. Initialisera Kartan (Samma som förut) ---
+    const map = L.map('map').setView([59.3293, 18.0686], 6);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OpenStreetMap &copy; CARTO'
     }).addTo(map);
 
     const fileInput = document.getElementById('fileInput');
+    const generateImgBtn = document.getElementById('generateImgBtn');
+    const downloadLink = document.getElementById('downloadLink');
     const status = document.getElementById('status');
-    let heatPoints = [];
+    
+    let currentActivityPoints = []; // Sparar punkter för det SENASTE inlästa passet
+    let currentStats = {};
 
+    // --- 2. Hantera Filuppladdning ---
     fileInput.addEventListener('change', async (e) => {
         const files = e.target.files;
-        status.innerText = `Läser ${files.length} filer...`;
+        if (files.length === 0) return;
         
-        heatPoints = []; // Nollställ
+        status.innerText = `Läser ${files.length} filer...`;
+        downloadLink.style.display = 'none';
+        
+        // Vi hanterar bara bildgenerering om MAN VÄLJER EN FIL.
+        // Om man väljer flera, ritar vi bara heatmap.
+        if (files.length === 1) {
+            generateImgBtn.disabled = false;
+            generateImgBtn.innerText = "Generera Delningsbild";
+        } else {
+            generateImgBtn.disabled = true;
+            generateImgBtn.innerText = "Välj en fil för bild";
+        }
+
+        currentActivityPoints = []; // Nollställ
+        let allHeatPoints = [];
 
         for (let file of files) {
             const text = await file.text();
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(text, "text/xml");
-            const trackpoints = xmlDoc.getElementsByTagName("trkpt");
-
-            for (let pt of trackpoints) {
-                const lat = parseFloat(pt.getAttribute("lat"));
-                const lon = parseFloat(pt.getAttribute("lon"));
-                if (!isNaN(lat) && !isNaN(lon)) {
-                    heatPoints.push([lat, lon, 0.5]); // 0.5 är intensitet
-                }
+            const points = parseGPX(text);
+            
+            if (files.length === 1) {
+                currentActivityPoints = points; // Spara för bildgenerering
+                currentStats = calculateStats(points);
             }
+            
+            // Konvertera till format för heatmap [[lat, lon, i], ...]
+            points.forEach(p => allHeatPoints.push([p.lat, p.lon, 0.5]));
         }
 
-        renderHeatmap();
+        renderHeatmap(allHeatPoints);
     });
 
-    function renderHeatmap() {
-        if (heatPoints.length > 0) {
-            // Ta bort gammalt lager om det finns (bra om man laddar upp flera gånger)
-            if (window.heatLayer) {
-                map.removeLayer(window.heatLayer);
+    // --- 3. GPX Parser (Nu med Tid och Distans) ---
+    function parseGPX(xmlText) {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+        const trackpoints = xmlDoc.getElementsByTagName("trkpt");
+        let points = [];
+
+        for (let i = 0; i < trackpoints.length; i++) {
+            const pt = trackpoints[i];
+            const lat = parseFloat(pt.getAttribute("lat"));
+            const lon = parseFloat(pt.getAttribute("lon"));
+            const timeStr = pt.getElementsByTagName("time")[0]?.textContent;
+            
+            if (!isNaN(lat) && !isNaN(lon)) {
+                points.push({
+                    lat: lat,
+                    lon: lon,
+                    time: timeStr ? new Date(timeStr) : null
+                });
             }
-    
-            // Skapa heatmap-lagret med nya, tunnare inställningar
-            window.heatLayer = L.heatLayer(heatPoints, {
-                // --- NYA INSTÄLLNINGAR HÄR ---
-                
-                // 1. Radie (Radius): Hur stor yta varje punkt påverkar. 
-                // Sänk denna drastiskt för att få tunnare linjer.
-                // Prova värden mellan 3 och 8.
-                radius: 5, 
-    
-                // 2. Oskärpa (Blur): Hur mycket kanterna flyter ut.
-                // Lägre värde ger skarpare linjer, högre ger mjukare moln.
-                // Prova värden mellan 2 och 10.
-                blur: 5,
-    
-                // 3. Minsta Opacitet (minOpacity): Hur genomskinlig den svagaste färgen är.
-                // Sänk denna för att se kartan bättre under de "kallare" områdena.
-                minOpacity: 0.2,
-    
-                // MaxZoom och Gradient kan vara kvar som innan
-                maxZoom: 15, // Vid vilken zoomnivå intensiteten är som högst
-                gradient: {0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1: 'red'}
-            }).addTo(map);
-    
-            // Zooma till datan
-            const bounds = new L.LatLngBounds(heatPoints.map(p => [p[0], p[1]]));
-            map.fitBounds(bounds);
-            status.innerText = "Klar! " + heatPoints.length + " punkter inlästa.";
         }
+        return points;
     }
+
+    // --- 4. Beräkna Statistik (Distans, Tid, Tempo) ---
+    function calculateStats(points) {
+        if (points.length < 2) return {};
+
+        let totalDistanceMeters = 0;
+        
+        // Haversine formel för distans mellan koordinater
+        for (let i = 0; i < points.length - 1; i++) {
+            totalDistanceMeters += map.distance(
+                [points[i].lat, points[i].lon],
+                [points[i+1].lat, points[i+1].lon]
+            );
+        }
+
+        const startTime = points[0].time;
+        const endTime = points[points.length - 1].time;
+        
+        let durationSeconds = 0;
+        if (startTime && endTime) {
+            durationSeconds = (endTime - startTime) / 1000;
+        }
+
+        const distanceKm = totalDistanceMeters / 1000;
+        const minutes = durationSeconds / 60;
+        const pace = distanceKm > 0 ? (minutes / distanceKm) : 0;
+
+        return {
+            distance: distanceKm.toFixed(2) + " km",
+            duration: formatDuration(durationSeconds),
+            pace: formatPace(pace)
+        };
+    }
+
+    function formatDuration(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        return `${h > 0 ? h + ':' : ''}${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function formatPace(decimalMinutes) {
+        if (!decimalMinutes) return "-:-- min/km";
+        const min = Math.floor(decimalMinutes);
+        const sec = Math.floor((decimalMinutes - min) * 60);
+        return `${min}:${String(sec).padStart(2, '0')} min/km`;
+    }
+
+    // --- 5. Rita Heatmap (Samma som förut, förenklad) ---
+    let heatLayer;
+    function renderHeatmap(points) {
+        if (heatLayer) map.removeLayer(heatLayer);
+        if (points.length === 0) return;
+
+        // Använder ett bibliotek för heatmap som måste laddas separat (se nedan)
+        // För enkelhetens skull i detta exempel ritar vi bara en polyline
+        // om heatmap-biblioteket saknas.
+        if (typeof L.heatLayer === 'function') {
+             heatLayer = L.heatLayer(points, {radius: 5, blur: 5, minOpacity: 0.3, maxZoom: 15}).addTo(map);
+        } else {
+             // Fallback: Rita bara ett streck om heatmap-plugin inte är laddat
+             const polylinePoints = points.map(p => [p[0], p[1]]);
+             heatLayer = L.polyline(polylinePoints, {color: '#fc4c02', weight: 3}).addTo(map);
+        }
+
+        const bounds = new L.LatLngBounds(points.map(p => [p[0], p[1]]));
+        map.fitBounds(bounds);
+        status.innerText = `Klar! Visualiserar ${points.length} punkter.`;
+    }
+
+    // --- 6. GENERERA TRANSPARENT BILD (Kärnan i din fråga) ---
+    generateImgBtn.addEventListener('click', () => {
+        if (currentActivityPoints.length < 2) return;
+
+        status.innerText = "Genererar bild...";
+        
+        // 1. Skapa en Canvas
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Sätt storlek (t.ex. 1080x1080 för Instagram)
+        canvas.width = 1080;
+        canvas.height = 1080;
+
+        // Bakgrunden är automatiskt transparent i en ny canvas.
+
+        // 2. Beräkna koordinaternas omfattning (Bounds)
+        let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+        currentActivityPoints.forEach(p => {
+            if (p.lat < minLat) minLat = p.lat;
+            if (p.lat > maxLat) maxLat = p.lat;
+            if (p.lon < minLon) minLon = p.lon;
+            if (p.lon > maxLon) maxLon = p.lon;
+        });
+
+        // 3. Hjälpfunktion för att mappa Lat/Lon till Canvas Pixlar
+        // Vi lägger till en "padding" på 10% så strecket inte går ändå ut i kanten.
+        const padding = 0.1;
+        function mapToCanvas(lat, lon) {
+            const x = canvas.width * padding + (lon - minLon) / (maxLon - minLon) * canvas.width * (1 - 2 * padding);
+            // Y är inverterad i Canvas (0 är högst upp)
+            const y = canvas.height * (1 - padding) - (lat - minLat) / (maxLat - minLat) * canvas.height * (1 - 2 * padding);
+            return {x, y};
+        }
+
+        // 4. Rita Strecket (Rutt)
+        ctx.strokeStyle = 'white'; // Vitt streck ser bäst ut över foton
+        ctx.lineWidth = 8;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+
+        ctx.beginPath();
+        const startP = mapToCanvas(currentActivityPoints[0].lat, currentActivityPoints[0].lon);
+        ctx.moveTo(startP.x, startP.y);
+
+        for (let i = 1; i < currentActivityPoints.length; i++) {
+            const p = mapToCanvas(currentActivityPoints[i].lat, currentActivityPoints[i].lon);
+            ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+
+        // 5. Rita Text (Statistik)
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 50px Helvetica Neue, sans-serif';
+        ctx.textAlign = 'left';
+
+        // Lägg texten längst ner till vänster
+        const textYStart = canvas.height - 80;
+        ctx.fillText(currentStats.distance || "", 50, textYStart);
+        
+        ctx.font = '30px Helvetica Neue, sans-serif';
+        ctx.fillStyle = '#ddd'; // Lite gråare text för label
+        ctx.fillText("Distans", 50, textYStart + 40);
+
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 50px Helvetica Neue, sans-serif';
+        ctx.fillText(currentStats.duration || "", 350, textYStart);
+        
+        ctx.font = '30px Helvetica Neue, sans-serif';
+        ctx.fillStyle = '#ddd';
+        ctx.fillText("Tid", 350, textYStart + 40);
+
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 50px Helvetica Neue, sans-serif';
+        ctx.fillText(currentStats.pace || "", 600, textYStart);
+        
+        ctx.font = '30px Helvetica Neue, sans-serif';
+        ctx.fillStyle = '#ddd';
+        ctx.fillText("Genomsnittligt tempo", 600, textYStart + 40);
+
+        // 6. Konvertera Canvas till en nedladdningsbar länk
+        const dataURL = canvas.toDataURL("image/png");
+        downloadLink.href = dataURL;
+        downloadLink.download = `traning_${new Date().toISOString().slice(0,10)}.png`;
+        downloadLink.style.display = 'block';
+        
+        status.innerText = "Bild klar! Klicka på länken nedan.";
+    });
 </script>
+
+<!-- OBS: För att heatmap ska fungera, lägg till denna rad i <head> om du inte redan har den: -->
+<!-- <script src="https://leaflet.github.io/Leaflet.heat/dist/leaflet-heat.js"></script> -->
 
 </body>
 </html>
