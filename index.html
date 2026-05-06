@@ -32,6 +32,14 @@
         <label>Välj GPX-fil</label>
         <input type="file" id="fileInput" accept=".gpx" />
     </div>
+    <div class="control-group">
+        <label>Visa på bilden:</label>
+        <label style="display:flex; gap:10px;"><input type="checkbox" id="showDist" checked> Distans</label>
+        <label style="display:flex; gap:10px;"><input type="checkbox" id="showTime" checked> Tid</label>
+        <label style="display:flex; gap:10px;"><input type="checkbox" id="showPace" checked> Tempo</label>
+        <label style="display:flex; gap:10px;"><input type="checkbox" id="showHR"> Snittpuls</label>
+        <label style="display:flex; gap:10px;"><input type="checkbox" id="showEle"> Höjdmeter</label>
+    </div>
 
     <div class="control-group">
         <label>Rörelsetröskel (m/s): <span id="threshVal">0.3</span></label>
@@ -97,11 +105,23 @@
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
         const trkpts = xmlDoc.getElementsByTagName("trkpt");
         rawPoints = [];
+    
         for (let pt of trkpts) {
+            // Hämta puls om det finns (Garmin använder ofta gpxtpx:hr)
+            const hr = pt.getElementsByTagName("gpxtpx:hr")[0]?.textContent || 
+                       pt.getElementsByTagName("hr")[0]?.textContent;
+            
+            // Hämta kadens
+            const cad = pt.getElementsByTagName("gpxtpx:cad")[0]?.textContent || 
+                        pt.getElementsByTagName("cad")[0]?.textContent;
+    
             rawPoints.push({
                 lat: parseFloat(pt.getAttribute("lat")),
                 lon: parseFloat(pt.getAttribute("lon")),
-                time: new Date(pt.getElementsByTagName("time")[0]?.textContent)
+                ele: parseFloat(pt.getElementsByTagName("ele")[0]?.textContent || 0),
+                time: new Date(pt.getElementsByTagName("time")[0]?.textContent),
+                hr: hr ? parseInt(hr) : null,
+                cad: cad ? parseInt(cad) : null
             });
         }
     }
@@ -114,11 +134,21 @@
     }
 
     function calculateMovingStats() {
-        let dist = 0, time = 0;
+        let dist = 0, time = 0, eleGain = 0, hrSum = 0, hrCount = 0;
         const threshold = parseFloat(threshSlider.value);
-
+    
         for (let i = 0; i < rawPoints.length - 1; i++) {
             const p1 = rawPoints[i], p2 = rawPoints[i+1];
+            
+            // Höjdvinst
+            if (p2.ele > p1.ele) eleGain += (p2.ele - p1.ele);
+            
+            // Puls (vi räknar snitt på hela passet, oavsett rörelse, eller bara vid rörelse?)
+            if (p1.hr) {
+                hrSum += p1.hr;
+                hrCount++;
+            }
+    
             const d = map.distance([p1.lat, p1.lon], [p2.lat, p2.lon]);
             const t = (p2.time - p1.time) / 1000;
             if (t > 0 && (d/t) > threshold) {
@@ -126,18 +156,14 @@
                 time += t;
             }
         }
-
-        const distKm = dist / 1000;
-        const paceMinKm = (time / 60) / distKm;
-        
+    
         processedStats = {
-            distStr: distKm.toFixed(2) + " km",
+            distStr: (dist / 1000).toFixed(2) + " km",
             timeStr: new Date(time * 1000).toISOString().substr(11, 8),
-            paceStr: Math.floor(paceMinKm) + ":" + Math.round((paceMinKm % 1) * 60).toString().padStart(2, '0') + " /km"
+            paceStr: formatPace(time, dist), // hjälpfunktion
+            hrStr: hrCount > 0 ? Math.round(hrSum / hrCount) + " bpm" : "--",
+            eleStr: Math.round(eleGain) + " m"
         };
-
-        document.getElementById('statsBox').innerText = 
-            `Beräknat: ${processedStats.distStr} | ${processedStats.timeStr} | ${processedStats.paceStr}`;
     }
 
     function drawPreview() {
@@ -178,6 +204,26 @@
         ctx.fillText("DISTANS", 60, size - 80);
         ctx.fillText("TID I RÖRELSE", size/2 - 100, size - 80);
         ctx.fillText("TEMPO", size - 280, size - 80);
+
+        const activeStats = [];
+        if (document.getElementById('showDist').checked) activeStats.push({val: processedStats.distStr, label: "DISTANS"});
+        if (document.getElementById('showTime').checked) activeStats.push({val: processedStats.timeStr, label: "TID"});
+        if (document.getElementById('showPace').checked) activeStats.push({val: processedStats.paceStr, label: "TEMPO"});
+        if (document.getElementById('showHR').checked) activeStats.push({val: processedStats.hrStr, label: "SNITTPULS"});
+        if (document.getElementById('showEle').checked) activeStats.push({val: processedStats.eleStr, label: "STIGNING"});
+    
+        // Rita ut de valda värdena jämnt fördelade längst ner
+        const spacing = size / (activeStats.length + 1);
+        activeStats.forEach((stat, i) => {
+            const x = spacing * (i + 1);
+            ctx.textAlign = "center";
+            ctx.fillStyle = "white";
+            ctx.font = "bold 40px Arial";
+            ctx.fillText(stat.val, x, size - 120);
+            ctx.font = "20px Arial";
+            ctx.fillStyle = "#aaa";
+            ctx.fillText(stat.label, x, size - 80);
+        });
     }
 
     function updateMap() {
