@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Min Garmin Heatmap</title>
+    <title>Garmin Heatmap</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -72,18 +72,38 @@
 
     function renderHeatmap() {
         if (heatPoints.length > 0) {
-            // Skapa heatmap-lagret
-            L.heatLayer(heatPoints, {
-                radius: 15,
-                blur: 15,
-                maxZoom: 10,
+            // Ta bort gammalt lager om det finns (bra om man laddar upp flera gånger)
+            if (window.heatLayer) {
+                map.removeLayer(window.heatLayer);
+            }
+    
+            // Skapa heatmap-lagret med nya, tunnare inställningar
+            window.heatLayer = L.heatLayer(heatPoints, {
+                // --- NYA INSTÄLLNINGAR HÄR ---
+                
+                // 1. Radie (Radius): Hur stor yta varje punkt påverkar. 
+                // Sänk denna drastiskt för att få tunnare linjer.
+                // Prova värden mellan 3 och 8.
+                radius: 5, 
+    
+                // 2. Oskärpa (Blur): Hur mycket kanterna flyter ut.
+                // Lägre värde ger skarpare linjer, högre ger mjukare moln.
+                // Prova värden mellan 2 och 10.
+                blur: 5,
+    
+                // 3. Minsta Opacitet (minOpacity): Hur genomskinlig den svagaste färgen är.
+                // Sänk denna för att se kartan bättre under de "kallare" områdena.
+                minOpacity: 0.2,
+    
+                // MaxZoom och Gradient kan vara kvar som innan
+                maxZoom: 15, // Vid vilken zoomnivå intensiteten är som högst
                 gradient: {0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1: 'red'}
             }).addTo(map);
-
+    
             // Zooma till datan
             const bounds = new L.LatLngBounds(heatPoints.map(p => [p[0], p[1]]));
             map.fitBounds(bounds);
-            status.innerText = "Klar! Hittade " + heatPoints.length + " punkter.";
+            status.innerText = "Klar! " + heatPoints.length + " punkter inlästa.";
         }
     }
 </script>
