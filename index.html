@@ -35,9 +35,10 @@
     <div class="control-group">
         <label>Kartstil</label>
         <select id="lineStyle" style="width: 100%; padding: 8px; background: #333; color: white; border: 1px solid #555; border-radius: 4px;">
-            <option value="solid">Standard (Orange)</option>
-            <option value="speed">Fartkarta (Blå=Långsam, Röd=Snabb)</option>
-            <option value="elevation">Höjdkarta (Grön=Låg, Röd=Hög)</option>
+            <option value="solid">Standard</option>
+            <option value="speed">Fartkarta</option>
+            <option value="elevation">Höjdkarta</option>
+            <option value="hr">Pulskarta</option>
         </select>
     </div>
     
@@ -80,7 +81,7 @@
 
     let rawPoints = [];
     let pathSegments = []; // NY: Sparar data för varje litet segment av rutten
-    let statsMinMax = { minEle: 0, maxEle: 0, minSpeed: 0, maxSpeed: 0 };
+    let statsMinMax = { minEle: 0, maxEle: 0, minSpeed: 0, maxSpeed: 0, minHR: 0, maxHR: 0 };
     let processedStats = {};
     
     const previewCanvas = document.getElementById('previewCanvas');
@@ -165,12 +166,17 @@
         pathSegments = [];
         let speeds = [];
         let elevations = [];
+        let heartRates = []; // NY: Array för att spara alla pulsvärden
     
         for (let i = 0; i < rawPoints.length - 1; i++) {
             const p1 = rawPoints[i], p2 = rawPoints[i+1];
             
             if (p2.ele > p1.ele) eleGain += (p2.ele - p1.ele);
-            if (p1.hr) { hrSum += p1.hr; hrCount++; }
+            if (p1.hr) { 
+                hrSum += p1.hr; 
+                hrCount++; 
+                heartRates.push(p1.hr); // Spara pulsen
+            }
             if (p1.ele !== undefined) elevations.push(p1.ele);
     
             const d = map.distance([p1.lat, p1.lon], [p2.lat, p2.lon]);
@@ -180,25 +186,31 @@
             if (t > 0 && (d/t) > threshold) {
                 dist += d;
                 time += t;
-                speed = d/t; // Meter per sekund
+                speed = d/t;
                 speeds.push(speed);
             }
             
-            // Spara data för just denna lilla linje
-            pathSegments.push({ p1, p2, speed, ele: p1.ele || 0 });
+            // Spara all data för just denna lilla linje (inklusive puls)
+            pathSegments.push({ p1, p2, speed, ele: p1.ele || 0, hr: p1.hr || null });
         }
         
         // --- Beräkna smart min/max för färgskalan ---
-        // Vi sorterar arrayerna och tar bort de extrema ytterligheterna (GPS-buggar)
         if (speeds.length > 0) {
             speeds.sort((a, b) => a - b);
-            statsMinMax.minSpeed = speeds[Math.floor(speeds.length * 0.05)]; // Ignorera 5% långsammaste
-            statsMinMax.maxSpeed = speeds[Math.floor(speeds.length * 0.95)]; // Ignorera 5% snabbaste (rusningar/buggar)
+            statsMinMax.minSpeed = speeds[Math.floor(speeds.length * 0.05)];
+            statsMinMax.maxSpeed = speeds[Math.floor(speeds.length * 0.95)];
         }
         if (elevations.length > 0) {
             elevations.sort((a, b) => a - b);
             statsMinMax.minEle = elevations[Math.floor(elevations.length * 0.02)];
             statsMinMax.maxEle = elevations[Math.floor(elevations.length * 0.98)];
+        }
+        // NY: Beräkna min/max för puls
+        if (heartRates.length > 0) {
+            heartRates.sort((a, b) => a - b);
+            // Klipper bort de 2% lägsta och högsta för att undvika spikar/felvärden
+            statsMinMax.minHR = heartRates[Math.floor(heartRates.length * 0.02)];
+            statsMinMax.maxHR = heartRates[Math.floor(heartRates.length * 0.98)];
         }
     
         processedStats = {
@@ -214,14 +226,12 @@
     // NY FUNKTION: Hämtar rätt färg för varje segment beroende på menyn
     function getSegmentColor(segment) {
         const style = styleSelect.value;
-        if (style === 'solid') return '#fc4c02'; // Klassisk Orange
+        if (style === 'solid') return '#fc4c02';
 
         if (style === 'speed') {
             if (statsMinMax.maxSpeed === statsMinMax.minSpeed) return 'hsl(120, 100%, 50%)';
             let norm = (segment.speed - statsMinMax.minSpeed) / (statsMinMax.maxSpeed - statsMinMax.minSpeed);
-            norm = Math.max(0, Math.min(1, norm)); // Håll värdet mellan 0 och 1
-            
-            // HSL: 240 (Blå) -> 120 (Grön) -> 0 (Röd)
+            norm = Math.max(0, Math.min(1, norm));
             const hue = (1 - norm) * 240; 
             return `hsl(${hue}, 100%, 50%)`;
         }
@@ -230,9 +240,22 @@
             if (statsMinMax.maxEle === statsMinMax.minEle) return 'hsl(120, 100%, 50%)';
             let norm = (segment.ele - statsMinMax.minEle) / (statsMinMax.maxEle - statsMinMax.minEle);
             norm = Math.max(0, Math.min(1, norm));
-            
-            // HSL: 120 (Grön=Låg) -> 60 (Gul) -> 0 (Röd=Hög)
             const hue = (1 - norm) * 120;
+            return `hsl(${hue}, 100%, 50%)`;
+        }
+
+        // NY: Pulskarta
+        if (style === 'hr') {
+            // Om pulsen saknades helt just här (t.ex. klockan tappade kontakt), rita grått
+            if (!segment.hr) return '#888888'; 
+            
+            if (statsMinMax.maxHR === statsMinMax.minHR) return 'hsl(0, 100%, 50%)'; // Undvik division med noll
+            
+            let norm = (segment.hr - statsMinMax.minHR) / (statsMinMax.maxHR - statsMinMax.minHR);
+            norm = Math.max(0, Math.min(1, norm));
+            
+            // HSL: 240 (Blå=Låg puls) -> 120 (Grön=Mellan) -> 0 (Röd=Hög puls)
+            const hue = (1 - norm) * 240;
             return `hsl(${hue}, 100%, 50%)`;
         }
     }
