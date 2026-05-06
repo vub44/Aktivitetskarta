@@ -130,33 +130,45 @@
     // --- 4. Beräkna Statistik (Distans, Tid, Tempo) ---
     function calculateStats(points) {
         if (points.length < 2) return {};
-
-        let totalDistanceMeters = 0;
+    
+        let movingDistanceMeters = 0;
+        let movingDurationSeconds = 0;
         
-        // Haversine formel för distans mellan koordinater
+        // Gränsvärde för rörelse: 0.5 meter per sekund (~1.8 km/h)
+        // Detta filtrerar bort "brus" när du står still.
+        const movingThresholdMs = 0.5; 
+    
         for (let i = 0; i < points.length - 1; i++) {
-            totalDistanceMeters += map.distance(
-                [points[i].lat, points[i].lon],
-                [points[i+1].lat, points[i+1].lon]
-            );
+            const p1 = points[i];
+            const p2 = points[i+1];
+            
+            // Beräkna distans mellan två punkter i meter
+            const d = map.distance([p1.lat, p1.lon], [p2.lat, p2.lon]);
+            
+            // Beräkna tid mellan två punkter i sekunder
+            if (p1.time && p2.time) {
+                const t = (p2.time - p1.time) / 1000;
+                
+                if (t > 0) {
+                    const speed = d / t;
+                    
+                    // Om hastigheten är högre än vårt tröskelvärde, räkna med det
+                    if (speed > movingThresholdMs) {
+                        movingDistanceMeters += d;
+                        movingDurationSeconds += t;
+                    }
+                }
+            }
         }
-
-        const startTime = points[0].time;
-        const endTime = points[points.length - 1].time;
-        
-        let durationSeconds = 0;
-        if (startTime && endTime) {
-            durationSeconds = (endTime - startTime) / 1000;
-        }
-
-        const distanceKm = totalDistanceMeters / 1000;
-        const minutes = durationSeconds / 60;
-        const pace = distanceKm > 0 ? (minutes / distanceKm) : 0;
-
+    
+        const distanceKm = movingDistanceMeters / 1000;
+        const minutes = movingDurationSeconds / 60;
+        const movingPace = distanceKm > 0 ? (minutes / distanceKm) : 0;
+    
         return {
             distance: distanceKm.toFixed(2) + " km",
-            duration: formatDuration(durationSeconds),
-            pace: formatPace(pace)
+            duration: formatDuration(movingDurationSeconds),
+            pace: formatPace(movingPace)
         };
     }
 
