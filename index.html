@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Min Garmin Heatmap</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; }
+        #map { height: 100vh; width: 100vw; }
+        #controls {
+            position: absolute; top: 10px; left: 50px; z-index: 1000;
+            background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .info { font-size: 12px; color: #666; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <h3>Tränings Heatmap</h3>
+    <input type="file" id="fileInput" multiple accept=".gpx" />
+    <p class="info">Ladda upp en eller flera .gpx-filer</p>
+    <div id="status"></div>
+</div>
+
+<div id="map"></div>
+
+<!-- Leaflet JS och Heatmap Plugin -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://leaflet.github.io/Leaflet.heat/dist/leaflet-heat.js"></script>
+
+<script>
+    // Initialisera kartan
+    const map = L.map('map').setView([59.3293, 18.0686], 6); // Startar över Sverige
+
+    // Lägg till bakgrundskarta (mörk design ser ofta bäst ut för heatmaps)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO'
+    }).addTo(map);
+
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+    let heatPoints = [];
+
+    fileInput.addEventListener('change', async (e) => {
+        const files = e.target.files;
+        status.innerText = `Läser ${files.length} filer...`;
+        
+        heatPoints = []; // Nollställ
+
+        for (let file of files) {
+            const text = await file.text();
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(text, "text/xml");
+            const trackpoints = xmlDoc.getElementsByTagName("trkpt");
+
+            for (let pt of trackpoints) {
+                const lat = parseFloat(pt.getAttribute("lat"));
+                const lon = parseFloat(pt.getAttribute("lon"));
+                if (!isNaN(lat) && !isNaN(lon)) {
+                    heatPoints.push([lat, lon, 0.5]); // 0.5 är intensitet
+                }
+            }
+        }
+
+        renderHeatmap();
+    });
+
+    function renderHeatmap() {
+        if (heatPoints.length > 0) {
+            // Skapa heatmap-lagret
+            L.heatLayer(heatPoints, {
+                radius: 15,
+                blur: 15,
+                maxZoom: 10,
+                gradient: {0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1: 'red'}
+            }).addTo(map);
+
+            // Zooma till datan
+            const bounds = new L.LatLngBounds(heatPoints.map(p => [p[0], p[1]]));
+            map.fitBounds(bounds);
+            status.innerText = "Klar! Hittade " + heatPoints.length + " punkter.";
+        }
+    }
+</script>
+
+</body>
+</html>
