@@ -3,303 +3,195 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Min Garmin Heatmap & Bildgenerator</title>
-    
-    <!-- Leaflet CSS -->
+    <title>Garmin</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    
     <style>
-        body { margin: 0; padding: 0; font-family: 'Helvetica Neue', sans-serif; background-color: #1a1a1a; color: white; }
-        #map { height: 100vh; width: 100vw; position: absolute; z-index: 1; }
-        #controls {
-            position: absolute; top: 10px; left: 10px; z-index: 1000;
-            background: rgba(30, 30, 30, 0.9); padding: 15px; border-radius: 12px; 
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5); backdrop-filter: blur(5px);
-            max-width: 300px;
-        }
-        h3 { margin-top: 0; color: #fc4c02; } /* Strava-orange */
-        input[type="file"] { margin-bottom: 10px; width: 100%; }
-        button {
-            background-color: #fc4c02; color: white; border: none; padding: 10px 15px;
-            border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%;
-            margin-top: 10px; transition: background 0.2s;
-        }
-        button:hover { background-color: #e34402; }
-        button:disabled { background-color: #555; cursor: not-allowed; }
-        .info { font-size: 12px; color: #aaa; margin-top: 5px; margin-bottom: 10px; }
-        #status { font-size: 14px; margin-top: 10px; color: #2ecc71; }
-
-        /* Styling för overlay-bilden (dold tills den behövs) */
-        #downloadLink { display: none; margin-top: 10px; text-align: center; color: #3498db; text-decoration: none; font-weight: bold;}
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: white; display: flex; height: 100vh; overflow: hidden; }
+        #sidebar { width: 350px; background: #1e1e1e; padding: 20px; overflow-y: auto; box-shadow: 2px 0 10px rgba(0,0,0,0.5); z-index: 10; }
+        #map { flex-grow: 1; z-index: 1; }
+        
+        h2 { color: #fc4c02; margin-top: 0; }
+        .control-group { margin-bottom: 20px; background: #2a2a2a; padding: 15px; border-radius: 8px; }
+        label { display: block; margin-bottom: 8px; font-size: 14px; color: #ccc; }
+        input[type="range"] { width: 100%; accent-color: #fc4c02; }
+        
+        #preview-container { margin-top: 20px; border: 2px dashed #444; border-radius: 8px; position: relative; background-image: linear-gradient(45deg, #252525 25%, transparent 25%), linear-gradient(-45deg, #252525 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #252525 75%), linear-gradient(-45deg, transparent 75%, #252525 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0px; }
+        #previewCanvas { width: 100%; display: block; border-radius: 6px; }
+        
+        .btn { background: #fc4c02; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; font-size: 16px; margin-top: 10px; }
+        .btn:hover { background: #ff6a2d; }
+        .stats-display { font-family: monospace; font-size: 12px; color: #2ecc71; margin-top: 10px; }
     </style>
 </head>
 <body>
 
-<div id="controls">
-    <h3>Träningsvisualiserare</h3>
-    <p class="info">Ladda upp <strong>en</strong> .gpx-fil för att generera en delningsbild, eller flera för heatmap.</p>
-    <input type="file" id="fileInput" multiple accept=".gpx" />
+<div id="sidebar">
+    <h2>Inställningar</h2>
     
-    <button id="generateImgBtn" disabled>Generera Delningsbild (Transparent)</button>
-    <a id="downloadLink" target="_blank">Klicka här för att ladda ner bild</a>
-    
-    <div id="status"></div>
+    <div class="control-group">
+        <label>Välj GPX-fil</label>
+        <input type="file" id="fileInput" accept=".gpx" />
+    </div>
+
+    <div class="control-group">
+        <label>Rörelsetröskel (m/s): <span id="threshVal">0.3</span></label>
+        <input type="range" id="threshold" min="0.1" max="1.5" step="0.1" value="0.3">
+        <p style="font-size: 10px; color: #888;">Högre värde = hårdare filtrering av stillastående tid.</p>
+    </div>
+
+    <div class="control-group">
+        <label>Bild-padding: <span id="padVal">15</span>%</label>
+        <input type="range" id="padding" min="5" max="30" step="5" value="15">
+    </div>
+
+    <div id="statsBox" class="stats-display"></div>
+
+    <div id="preview-container">
+        <canvas id="previewCanvas"></canvas>
+    </div>
+
+    <button id="downloadBtn" class="btn" style="display:none;">Ladda ner Transparent PNG</button>
 </div>
 
 <div id="map"></div>
 
-<!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <script>
-    // --- 1. Initialisera Kartan (Samma som förut) ---
-    const map = L.map('map').setView([59.3293, 18.0686], 6);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap &copy; CARTO'
-    }).addTo(map);
+    const map = L.map('map').setView([59, 18], 5);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 
+    let rawPoints = [];
+    let processedStats = {};
+    const previewCanvas = document.getElementById('previewCanvas');
+    const ctx = previewCanvas.getContext('2d');
+
+    // UI-element
     const fileInput = document.getElementById('fileInput');
-    const generateImgBtn = document.getElementById('generateImgBtn');
-    const downloadLink = document.getElementById('downloadLink');
-    const status = document.getElementById('status');
-    
-    let currentActivityPoints = []; // Sparar punkter för det SENASTE inlästa passet
-    let currentStats = {};
+    const threshSlider = document.getElementById('threshold');
+    const padSlider = document.getElementById('padding');
+    const downloadBtn = document.getElementById('downloadBtn');
 
-    // --- 2. Hantera Filuppladdning ---
-    fileInput.addEventListener('change', async (e) => {
-        const files = e.target.files;
-        if (files.length === 0) return;
-        
-        status.innerText = `Läser ${files.length} filer...`;
-        downloadLink.style.display = 'none';
-        
-        // Vi hanterar bara bildgenerering om MAN VÄLJER EN FIL.
-        // Om man väljer flera, ritar vi bara heatmap.
-        if (files.length === 1) {
-            generateImgBtn.disabled = false;
-            generateImgBtn.innerText = "Generera Delningsbild";
-        } else {
-            generateImgBtn.disabled = true;
-            generateImgBtn.innerText = "Välj en fil för bild";
-        }
-
-        currentActivityPoints = []; // Nollställ
-        let allHeatPoints = [];
-
-        for (let file of files) {
-            const text = await file.text();
-            const points = parseGPX(text);
-            
-            if (files.length === 1) {
-                currentActivityPoints = points; // Spara för bildgenerering
-                currentStats = calculateStats(points);
-            }
-            
-            // Konvertera till format för heatmap [[lat, lon, i], ...]
-            points.forEach(p => allHeatPoints.push([p.lat, p.lon, 0.5]));
-        }
-
-        renderHeatmap(allHeatPoints);
+    // Lyssna på ändringar
+    fileInput.addEventListener('change', handleFile);
+    threshSlider.addEventListener('input', () => {
+        document.getElementById('threshVal').innerText = threshSlider.value;
+        updateAll();
+    });
+    padSlider.addEventListener('input', () => {
+        document.getElementById('padVal').innerText = padSlider.value;
+        updateAll();
     });
 
-    // --- 3. GPX Parser (Nu med Tid och Distans) ---
+    async function handleFile(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const text = await file.text();
+        parseGPX(text);
+        updateAll();
+        downloadBtn.style.display = 'block';
+    }
+
     function parseGPX(xmlText) {
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-        const trackpoints = xmlDoc.getElementsByTagName("trkpt");
-        let points = [];
-
-        for (let i = 0; i < trackpoints.length; i++) {
-            const pt = trackpoints[i];
-            const lat = parseFloat(pt.getAttribute("lat"));
-            const lon = parseFloat(pt.getAttribute("lon"));
-            const timeStr = pt.getElementsByTagName("time")[0]?.textContent;
-            
-            if (!isNaN(lat) && !isNaN(lon)) {
-                points.push({
-                    lat: lat,
-                    lon: lon,
-                    time: timeStr ? new Date(timeStr) : null
-                });
-            }
+        const trkpts = xmlDoc.getElementsByTagName("trkpt");
+        rawPoints = [];
+        for (let pt of trkpts) {
+            rawPoints.push({
+                lat: parseFloat(pt.getAttribute("lat")),
+                lon: parseFloat(pt.getAttribute("lon")),
+                time: new Date(pt.getElementsByTagName("time")[0]?.textContent)
+            });
         }
-        return points;
     }
 
-    // --- 4. Beräkna Statistik (Distans, Tid, Tempo) ---
-    function calculateStats(points) {
-        if (points.length < 2) return {};
-    
-        let movingDistanceMeters = 0;
-        let movingDurationSeconds = 0;
-        
-        // Gränsvärde för rörelse: 0.5 meter per sekund (~1.8 km/h)
-        // Detta filtrerar bort "brus" när du står still.
-        const movingThresholdMs = 0.3; 
-    
-        for (let i = 0; i < points.length - 1; i++) {
-            const p1 = points[i];
-            const p2 = points[i+1];
-            
-            // Beräkna distans mellan två punkter i meter
+    function updateAll() {
+        if (rawPoints.length < 2) return;
+        calculateMovingStats();
+        drawPreview();
+        updateMap();
+    }
+
+    function calculateMovingStats() {
+        let dist = 0, time = 0;
+        const threshold = parseFloat(threshSlider.value);
+
+        for (let i = 0; i < rawPoints.length - 1; i++) {
+            const p1 = rawPoints[i], p2 = rawPoints[i+1];
             const d = map.distance([p1.lat, p1.lon], [p2.lat, p2.lon]);
-            
-            // Beräkna tid mellan två punkter i sekunder
-            if (p1.time && p2.time) {
-                const t = (p2.time - p1.time) / 1000;
-                
-                if (t > 0) {
-                    const speed = d / t;
-                    
-                    // Om hastigheten är högre än vårt tröskelvärde, räkna med det
-                    if (speed > movingThresholdMs) {
-                        movingDistanceMeters += d;
-                        movingDurationSeconds += t;
-                    }
-                }
+            const t = (p2.time - p1.time) / 1000;
+            if (t > 0 && (d/t) > threshold) {
+                dist += d;
+                time += t;
             }
         }
-    
-        const distanceKm = movingDistanceMeters / 1000;
-        const minutes = movingDurationSeconds / 60;
-        const movingPace = distanceKm > 0 ? (minutes / distanceKm) : 0;
-    
-        return {
-            distance: distanceKm.toFixed(2) + " km",
-            duration: formatDuration(movingDurationSeconds),
-            pace: formatPace(movingPace)
+
+        const distKm = dist / 1000;
+        const paceMinKm = (time / 60) / distKm;
+        
+        processedStats = {
+            distStr: distKm.toFixed(2) + " km",
+            timeStr: new Date(time * 1000).toISOString().substr(11, 8),
+            paceStr: Math.floor(paceMinKm) + ":" + Math.round((paceMinKm % 1) * 60).toString().padStart(2, '0') + " /km"
         };
+
+        document.getElementById('statsBox').innerText = 
+            `Beräknat: ${processedStats.distStr} | ${processedStats.timeStr} | ${processedStats.paceStr}`;
     }
 
-    function formatDuration(seconds) {
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        const s = Math.floor(seconds % 60);
-        return `${h > 0 ? h + ':' : ''}${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    }
+    function drawPreview() {
+        const size = 1080;
+        previewCanvas.width = size;
+        previewCanvas.height = size;
+        ctx.clearRect(0, 0, size, size);
 
-    function formatPace(decimalMinutes) {
-        if (!decimalMinutes) return "-:-- min/km";
-        const min = Math.floor(decimalMinutes);
-        const sec = Math.floor((decimalMinutes - min) * 60);
-        return `${min}:${String(sec).padStart(2, '0')} min/km`;
-    }
-
-    // --- 5. Rita Heatmap (Samma som förut, förenklad) ---
-    let heatLayer;
-    function renderHeatmap(points) {
-        if (heatLayer) map.removeLayer(heatLayer);
-        if (points.length === 0) return;
-
-        // Använder ett bibliotek för heatmap som måste laddas separat (se nedan)
-        // För enkelhetens skull i detta exempel ritar vi bara en polyline
-        // om heatmap-biblioteket saknas.
-        if (typeof L.heatLayer === 'function') {
-             heatLayer = L.heatLayer(points, {radius: 5, blur: 5, minOpacity: 0.3, maxZoom: 15}).addTo(map);
-        } else {
-             // Fallback: Rita bara ett streck om heatmap-plugin inte är laddat
-             const polylinePoints = points.map(p => [p[0], p[1]]);
-             heatLayer = L.polyline(polylinePoints, {color: '#fc4c02', weight: 3}).addTo(map);
-        }
-
-        const bounds = new L.LatLngBounds(points.map(p => [p[0], p[1]]));
-        map.fitBounds(bounds);
-        status.innerText = `Klar! Visualiserar ${points.length} punkter.`;
-    }
-
-    // --- 6. GENERERA TRANSPARENT BILD (Kärnan i din fråga) ---
-    generateImgBtn.addEventListener('click', () => {
-        if (currentActivityPoints.length < 2) return;
-
-        status.innerText = "Genererar bild...";
+        const pad = parseFloat(padSlider.value) / 100;
         
-        // 1. Skapa en Canvas
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        // Sätt storlek (t.ex. 1080x1080 för Instagram)
-        canvas.width = 1080;
-        canvas.height = 1080;
+        // Hitta bounds
+        let lats = rawPoints.map(p => p.lat), lons = rawPoints.map(p => p.lon);
+        let minLat = Math.min(...lats), maxLat = Math.max(...lats);
+        let minLon = Math.min(...lons), maxLon = Math.max(...lons);
 
-        // Bakgrunden är automatiskt transparent i en ny canvas.
+        const mapX = lon => size * pad + (lon - minLon) / (maxLon - minLon) * size * (1 - 2 * pad);
+        const mapY = lat => size * (1 - pad) - (lat - minLat) / (maxLat - minLat) * size * (1 - 2 * pad);
 
-        // 2. Beräkna koordinaternas omfattning (Bounds)
-        let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
-        currentActivityPoints.forEach(p => {
-            if (p.lat < minLat) minLat = p.lat;
-            if (p.lat > maxLat) maxLat = p.lat;
-            if (p.lon < minLon) minLon = p.lon;
-            if (p.lon > maxLon) maxLon = p.lon;
-        });
-
-        // 3. Hjälpfunktion för att mappa Lat/Lon till Canvas Pixlar
-        // Vi lägger till en "padding" på 10% så strecket inte går ändå ut i kanten.
-        const padding = 0.1;
-        function mapToCanvas(lat, lon) {
-            const x = canvas.width * padding + (lon - minLon) / (maxLon - minLon) * canvas.width * (1 - 2 * padding);
-            // Y är inverterad i Canvas (0 är högst upp)
-            const y = canvas.height * (1 - padding) - (lat - minLat) / (maxLat - minLat) * canvas.height * (1 - 2 * padding);
-            return {x, y};
-        }
-
-        // 4. Rita Strecket (Rutt)
-        ctx.strokeStyle = 'white'; // Vitt streck ser bäst ut över foton
-        ctx.lineWidth = 8;
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-
+        // Rita rutt
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 10;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
         ctx.beginPath();
-        const startP = mapToCanvas(currentActivityPoints[0].lat, currentActivityPoints[0].lon);
-        ctx.moveTo(startP.x, startP.y);
-
-        for (let i = 1; i < currentActivityPoints.length; i++) {
-            const p = mapToCanvas(currentActivityPoints[i].lat, currentActivityPoints[i].lon);
-            ctx.lineTo(p.x, p.y);
-        }
+        ctx.moveTo(mapX(rawPoints[0].lon), mapY(rawPoints[0].lat));
+        rawPoints.forEach(p => ctx.lineTo(mapX(p.lon), mapY(p.lat)));
         ctx.stroke();
 
-        // 5. Rita Text (Statistik)
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 50px Helvetica Neue, sans-serif';
-        ctx.textAlign = 'left';
-
-        // Lägg texten längst ner till vänster
-        const textYStart = canvas.height - 80;
-        ctx.fillText(currentStats.distance || "", 50, textYStart);
+        // Rita text
+        ctx.fillStyle = "white";
+        ctx.font = "bold 45px Arial";
+        ctx.fillText(processedStats.distStr, 60, size - 120);
+        ctx.fillText(processedStats.timeStr, size/2 - 100, size - 120);
+        ctx.fillText(processedStats.paceStr, size - 280, size - 120);
         
-        ctx.font = '30px Helvetica Neue, sans-serif';
-        ctx.fillStyle = '#ddd'; // Lite gråare text för label
-        ctx.fillText("Distans", 50, textYStart + 40);
+        ctx.font = "25px Arial";
+        ctx.fillStyle = "#aaa";
+        ctx.fillText("DISTANS", 60, size - 80);
+        ctx.fillText("TID I RÖRELSE", size/2 - 100, size - 80);
+        ctx.fillText("TEMPO", size - 280, size - 80);
+    }
 
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 50px Helvetica Neue, sans-serif';
-        ctx.fillText(currentStats.duration || "", 350, textYStart);
-        
-        ctx.font = '30px Helvetica Neue, sans-serif';
-        ctx.fillStyle = '#ddd';
-        ctx.fillText("Tid", 350, textYStart + 40);
+    function updateMap() {
+        const poly = L.polyline(rawPoints.map(p => [p.lat, p.lon]), {color: '#fc4c02'}).addTo(map);
+        map.fitBounds(poly.getBounds());
+    }
 
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 50px Helvetica Neue, sans-serif';
-        ctx.fillText(currentStats.pace || "", 600, textYStart);
-        
-        ctx.font = '30px Helvetica Neue, sans-serif';
-        ctx.fillStyle = '#ddd';
-        ctx.fillText("Genomsnittligt tempo", 600, textYStart + 40);
-
-        // 6. Konvertera Canvas till en nedladdningsbar länk
-        const dataURL = canvas.toDataURL("image/png");
-        downloadLink.href = dataURL;
-        downloadLink.download = `traning_${new Date().toISOString().slice(0,10)}.png`;
-        downloadLink.style.display = 'block';
-        
-        status.innerText = "Bild klar! Klicka på länken nedan.";
+    downloadBtn.addEventListener('click', () => {
+        const link = document.createElement('a');
+        link.download = 'my-workout.png';
+        link.href = previewCanvas.toDataURL();
+        link.click();
     });
 </script>
-
-<!-- OBS: För att heatmap ska fungera, lägg till denna rad i <head> om du inte redan har den: -->
-<!-- <script src="https://leaflet.github.io/Leaflet.heat/dist/leaflet-heat.js"></script> -->
 
 </body>
 </html>
